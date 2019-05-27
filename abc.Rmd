@@ -1,0 +1,215 @@
+---
+title: "ABC output report."
+output_document: html_document
+params:
+  datafile: "mixGauss.csv"
+  input_variables: !r c("theta0", "theta1") 
+  prior_bounds: !r list(min=c(-10,-10), max=c(10,10))
+  bandwidth: !r c(0.005, 0.005)
+---
+
+```{r eval=FALSE}
+params <- list(datafile = "mixGauss.csv",
+              input_variables = c("theta0", "theta1"),
+              prior_bounds = list(min=c(-10,-10), max=c(10,10)),
+              bandwidth = c(0.001, 0.001))
+```
+
+```{r}
+library(ks)
+library(igraph)
+library(mvtnorm)
+library(tidyverse)
+library(patchwork)
+```
+
+```{r}
+datafile <- params$datafile
+input_variables <- params$input_variables
+prior <- as_tibble(params$prior_bounds)
+dimension <- length(input_variables)
+h <- params$bandwidth
+```
+
+# Data
+
+```{r}
+post <- read_csv(params$datafile) %>% 
+  select_at(c(params$input_variables, "weight")) %>%
+  filter(weight > 0) %>%
+  mutate(weight = weight / sum(weight))
+
+thetas <- post %>% select_at(params$input_variables)
+weights <- post %>% select(weight)
+```
+
+# Kernel density estimate
+
+```{r}
+source("kde.R")
+```
+
+```{r}
+#fhat <- fhat_bounded(thetas_coop, weights_coop, bounds=data.frame(min=c(0,0,0), max=c(1,1,1)), bins = rep(50,ncol(thetas_coop)))
+#fhat <- fhat(thetas_coop, weights_coop, bins = rep(50,ncol(thetas_coop)))
+# fhat_mg <- fhat(thetas_mg, weights_mg, bins = rep(50,ncol(thetas_mg)))
+fhat <- kde_bounded_2(thetas, weights, bounds=prior, bins = rep(30,ncol(thetas)),h = h)
+```
+
+Sanity check of the density estimates:
+
+```{r}
+fhat$result %>% summarize(sum(density*vcell)) %>% deframe()
+```
+
+# Marginales
+
+```{r}
+fhat_marginal <- map2(input_variables, 1:dimension, function(v,i) 
+    kde_bounded_2(thetas[v], weights, bins=100, bounds=slice(prior, i), h=h[[i]])) %>% 
+  set_names(input_variables)
+
+marginal_plots <- imap(fhat_marginal, function(marginal,variable_name)
+  ggplot(marginal$result) + geom_line(mapping=aes_string(x=variable_name, y="density")))
+
+
+marginal_dotplots <- imap(input_variables, function(variable_name, variable_index)
+  ggplot(thetas) + geom_dotplot(aes_string(x=variable_name), binwidth=(max(thetas[[variable_name]]) - min(thetas[[variable_name]])) / 300))
+
+reduce(c(marginal_plots,marginal_dotplots), `+`) + 
+  if(length(marginal_plots) > 1) {plot_layout(ncol=min(c(dimension,4)))}
+```
+
+```{r}
+variable_pairs <-t(combn(input_variables, 2))
+indices_pairs <- t(combn(1:dimension, 2))
+marginals <- tibble(v1=variable_pairs[,1], v2=variable_pairs[,2], i1=indices_pairs[,1], i2=indices_pairs[,2])
+fhat_marginal_2 <- pmap(marginals, function(v1, v2, i1, i2) 
+  kde_bounded_2(thetas[c(v1, v2)], weights, bins=50, bounds=slice(prior, i1, i2), h = h[c(i1, i2)]))
+```
+
+```{r}
+plot_marginal_2 <- function(fhat_marg, v1, v2) {
+  ggplot(fhat_marg$result) + 
+    geom_raster(aes_string(x=v1, y=v2, fill="density")) +
+    geom_contour(aes_string(x=v1, y=v2, z="density"), colour="white") 
+}
+
+marginal_2_plots <- pmap(list(fhat_marg=fhat_marginal_2, v1=variable_pairs[,1], v2=variable_pairs[,2]), plot_marginal_2)
+
+reduce(marginal_2_plots, `+`) + if (length(marginal_2_plots) > 1) {plot_layout(ncol=2)}
+```
+
+
+
+# Maximum density estimate of the model parameters
+
+
+```{r}
+most_likely <- function(fhat) {
+  maxLikelyInd <- which.max(fhat$result$density)
+  fhat$result[maxLikelyInd,]
+}
+```
+
+```{r}
+ml <- most_likely(fhat)
+ml
+```
+
+
+
+# Is the posterior distribution flat or peaked?
+
+Volume of the subspace GTau where the local probability is > tau, as a function of tau.
+
+```{r}
+vgtau <- function(fhat, tau) {
+  #sum(fhat$result$density >= tau * fhat$vcell)
+  fhat$result %>% filter(density >= tau) %>% summarize(sum(density * vcell)) %>% deframe()
+}
+
+vgtaus <- function(fhat, taus) {
+  sapply(taus, function(x) { vgtau(fhat,x) })
+}
+```
+
+```{r}
+taus <- seq(0, max(fhat$result$density), length.out=50)
+ggplot(data.frame(tau=taus, posterior=vgtaus(fhat, taus))) +
+  geom_line(aes(x=tau, y=posterior)) +
+  scale_x_reverse() +
+  ylab("Volume")
+```
+
+
+# How many peaks are there and where are they?
+
+Number of disjoint components of the subspace where the density is > tau, as a function of tau.
+
+```{r}
+cgtau <- function(fhat, tau) {
+  if(tau <= 0) {
+    c <- rep(1, nrow(fhat$result))
+  } else {
+    nodes <- (1:nrow(fhat$result))[fhat$result$density >= tau]
+    g <- induced_subgraph(make_lattice(sapply(fhat$grid_borders, length)), nodes)
+    c <- components(g)$membership
+  }
+  fhat$result %>% 
+    filter(density >=tau) %>% 
+    group_by(cluster = c) %>%
+    filter(density == max(density)) %>%
+    ungroup() %>%
+    select_at(c(input_variables, "density")) %>%
+    mutate(tau=tau)
+}
+
+taus <- seq(0, max(fhat$result$density), length.out=100)
+cgtaus <- bind_rows(lapply(taus, function(x) cgtau(fhat, x)))
+
+ggplot(cgtaus %>% group_by(tau) %>% summarize(clusters = n())) +
+  geom_line(aes(x=tau, y=clusters)) +
+  scale_x_reverse()
+```
+
+Highest position of each peak.
+
+```{r}
+cgtaus %>% group_by_at(input_variables) %>% summarize(density=max(density)) %>% ungroup() %>% arrange(desc(density)) 
+```
+
+
+# How close to the highest peak is the distribution?
+
+Posterior probability of the parameters being within a sphere centered on the highest density point, as a function of its radius. 
+
+```{r}
+selected_points <- fhat$result %>% filter(density > 0)
+
+# Distance of each point from the highest density
+sp <- selected_points %>% select(input_variables)
+repml <- matrix(rep(as.numeric(ml[,input_variables]), each=nrow(sp)), ncol=dimension)
+dhd <- sqrt(rowSums((sp - repml) ** 2))
+
+# Cumulative probability as a function of the radius
+ppoint <- selected_points$density 
+sortind <- order(dhd)
+prad<- cumsum(ppoint[sortind])
+
+ggplot(data.frame(radius = dhd[sortind], posterior = prad)) +
+  geom_line(aes(x=radius, y=posterior))
+```
+
+
+
+
+
+### Model checking ###
+
+## 1. Is the model a resonable explanation of the data?
+
+
+
+
+## 2. Equifinality
