@@ -8,7 +8,7 @@ params:
   bandwidth: !r c(0.005, 0.005)
 ---
 
-```{r eval=FALSE}
+```{r eval=FALSE, echo=FALSE}
 params <- list(datafile = "mixGauss.csv",
               input_variables = c("theta0", "theta1"),
               prior_bounds = list(min=c(-10,-10), max=c(10,10)),
@@ -34,12 +34,12 @@ h <- params$bandwidth
 # Data
 
 ```{r}
-post <- read_csv(params$datafile) %>% 
-  select_at(c(params$input_variables, "weight")) %>%
+post <- read_csv(datafile) %>% 
+  select_at(c(input_variables, "weight")) %>%
   filter(weight > 0) %>%
   mutate(weight = weight / sum(weight))
 
-thetas <- post %>% select_at(params$input_variables)
+thetas <- post %>% select_at(input_variables)
 weights <- post %>% select(weight)
 ```
 
@@ -193,7 +193,7 @@ repml <- matrix(rep(as.numeric(ml[,input_variables]), each=nrow(sp)), ncol=dimen
 dhd <- sqrt(rowSums((sp - repml) ** 2))
 
 # Cumulative probability as a function of the radius
-ppoint <- selected_points$density 
+ppoint <- selected_points$density * selected_points$vcell
 sortind <- order(dhd)
 prad<- cumsum(ppoint[sortind])
 
