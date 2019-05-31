@@ -1,0 +1,21 @@
+import _file_.abc._
+
+val theta1 = Val[Double]
+val theta2 = Val[Double]
+val theta3 = Val[Double]
+
+// Run the simulations from the csv sample
+val s = CSVSampling(workDirectory / "../data/resample.csv") set (
+  columns += theta1,
+  columns += theta2,
+  columns += theta3
+)
+
+val run = DirectSampling(
+  evaluation = model 
+    hook CSVHook(workDirectory / "../data/posteriorPrediction.csv", 
+      values = Seq(theta1, theta2, theta3, o1, o2, o3)) ,
+  sampling = s
+)
+
+run

@@ -2,18 +2,12 @@
 title: "ABC output report."
 output_document: html_document
 params:
-  datafile: "mixGauss.csv"
-  input_variables: !r c("theta0", "theta1") 
-  prior_bounds: !r list(min=c(-10,-10), max=c(10,10))
-  bandwidth: !r c(0.005, 0.005)
+  datafile: "data/mixGauss3D.csv"
+  input_variables: !r c("theta1", "theta2", "theta3") 
+  prior_bounds: !r list(theta1=c(-10,10), theta2=c(-10,10), theta3=c(-10,10))
+  bins: !r list(theta1=20, theta2=20, theta3=20)
+  bandwidth: !r list(theta1=0.01, theta2=0.01, theta3=0.01)
 ---
-
-```{r eval=FALSE, echo=FALSE}
-params <- list(datafile = "mixGauss.csv",
-              input_variables = c("theta0", "theta1"),
-              prior_bounds = list(min=c(-10,-10), max=c(10,10)),
-              bandwidth = c(0.001, 0.001))
-```
 
 ```{r}
 library(ks)
@@ -28,7 +22,8 @@ datafile <- params$datafile
 input_variables <- params$input_variables
 prior <- as_tibble(params$prior_bounds)
 dimension <- length(input_variables)
-h <- params$bandwidth
+bins <- as_tibble(params$bins)
+h <- as_tibble(params$bandwidth)
 ```
 
 # Data
@@ -50,56 +45,59 @@ source("kde.R")
 ```
 
 ```{r}
-#fhat <- fhat_bounded(thetas_coop, weights_coop, bounds=data.frame(min=c(0,0,0), max=c(1,1,1)), bins = rep(50,ncol(thetas_coop)))
-#fhat <- fhat(thetas_coop, weights_coop, bins = rep(50,ncol(thetas_coop)))
-# fhat_mg <- fhat(thetas_mg, weights_mg, bins = rep(50,ncol(thetas_mg)))
-fhat <- kde_bounded_2(thetas, weights, bounds=prior, bins = rep(30,ncol(thetas)),h = h)
+fhat <- kde_bounded_2(thetas, weights, bounds=prior, bins = bins,h = h)
 ```
 
 Sanity check of the density estimates:
 
 ```{r}
-fhat$result %>% summarize(sum(density*vcell)) %>% deframe()
+fhat$result %>% summarize(sum(density*vcell)) 
 ```
 
 # Marginales
 
 ```{r}
-fhat_marginal <- map2(input_variables, 1:dimension, function(v,i) 
-    kde_bounded_2(thetas[v], weights, bins=100, bounds=slice(prior, i), h=h[[i]])) %>% 
-  set_names(input_variables)
-
-marginal_plots <- imap(fhat_marginal, function(marginal,variable_name)
-  ggplot(marginal$result) + geom_line(mapping=aes_string(x=variable_name, y="density")))
-
-
-marginal_dotplots <- imap(input_variables, function(variable_name, variable_index)
-  ggplot(thetas) + geom_dotplot(aes_string(x=variable_name), binwidth=(max(thetas[[variable_name]]) - min(thetas[[variable_name]])) / 300))
-
-reduce(c(marginal_plots,marginal_dotplots), `+`) + 
-  if(length(marginal_plots) > 1) {plot_layout(ncol=min(c(dimension,4)))}
-```
-
-```{r}
-variable_pairs <-t(combn(input_variables, 2))
-indices_pairs <- t(combn(1:dimension, 2))
-marginals <- tibble(v1=variable_pairs[,1], v2=variable_pairs[,2], i1=indices_pairs[,1], i2=indices_pairs[,2])
-fhat_marginal_2 <- pmap(marginals, function(v1, v2, i1, i2) 
-  kde_bounded_2(thetas[c(v1, v2)], weights, bins=50, bounds=slice(prior, i1, i2), h = h[c(i1, i2)]))
-```
-
-```{r}
-plot_marginal_2 <- function(fhat_marg, v1, v2) {
-  ggplot(fhat_marg$result) + 
-    geom_raster(aes_string(x=v1, y=v2, fill="density")) +
-    geom_contour(aes_string(x=v1, y=v2, z="density"), colour="white") 
+fhat_marginal <- function(thetas, weights, prior, bins, h) {
+  bind_rows(
+    map(
+      names(thetas), 
+      function(v) {
+        f <- kde_bounded_2(select(thetas, v), weights, 
+                            bounds = select(prior, v), 
+                            bins = select(bins, v), 
+                            h=select(h, v))
+        f$result %>% select(v1=v, density) %>% mutate(v1_name=!!v)
+      }
+    )
+  )
 }
 
-marginal_2_plots <- pmap(list(fhat_marg=fhat_marginal_2, v1=variable_pairs[,1], v2=variable_pairs[,2]), plot_marginal_2)
-
-reduce(marginal_2_plots, `+`) + if (length(marginal_2_plots) > 1) {plot_layout(ncol=2)}
+ggplot(fhat_marginal(thetas,weights,prior,bins,h)) +
+  geom_line(aes(x=v1, y=density)) +
+  facet_wrap("v1_name")
 ```
 
+```{r}
+fhat_marginal_2 <- function(thetas, weights, prior, bins, h) {
+  variable_pairs <- t(combn(names(thetas), 2))
+  marginals <- tibble(v1=variable_pairs[,1], v2=variable_pairs[,2])
+
+  bind_rows(
+    pmap(marginals, function(v1, v2) {
+    f <- kde_bounded_2(thetas[c(v1, v2)], weights, bins=select(bins, v1, v2), 
+      bounds=select(prior, v1, v2), h = select(h, v1, v2))
+    tibble(v1 = f$result[[v1]], v2 = f$result[[v2]], v1_name=!!v1, v2_name=!!v2, density=f$result[["density"]])
+    })
+  )
+}
+```
+
+```{r}
+ggplot(fhat_marginal_2(thetas, weights, prior, bins, h)) + 
+  geom_raster(aes(x=v1, y=v2, fill=density)) +
+  # geom_contour(aes(x=v1, y=v2, z=density), colour="white") +
+  facet_grid(rows=vars(v1_name), cols=vars(v2_name))
+```
 
 
 # Maximum density estimate of the model parameters
@@ -125,8 +123,7 @@ Volume of the subspace GTau where the local probability is > tau, as a function 
 
 ```{r}
 vgtau <- function(fhat, tau) {
-  #sum(fhat$result$density >= tau * fhat$vcell)
-  fhat$result %>% filter(density >= tau) %>% summarize(sum(density * vcell)) %>% deframe()
+  fhat$result %>% filter(density >= tau) %>% summarize(sum(vcell)) %>% deframe()
 }
 
 vgtaus <- function(fhat, taus) {
@@ -141,6 +138,7 @@ ggplot(data.frame(tau=taus, posterior=vgtaus(fhat, taus))) +
   scale_x_reverse() +
   ylab("Volume")
 ```
+
 
 
 # How many peaks are there and where are they?
@@ -205,11 +203,100 @@ ggplot(data.frame(radius = dhd[sortind], posterior = prad)) +
 
 
 
-### Model checking ###
+# Model checking
 
-## 1. Is the model a resonable explanation of the data?
+## Posterior predictive checks: is the model a resonable explanation of the data?
+
+```{r}
+output_variables <- c("o1", "o2", "o3")
+
+predThetas <- read_csv("data/posteriorPrediction.csv") %>% 
+  select_at(input_variables)
+predOut <- read_csv("data/posteriorPrediction.csv") %>% 
+  select_at(output_variables)
+```
+
+### Marginals
+
+```{r}
+bounds_out <- tibble(o1=c(-10,10), o2=c(-10,10), o3=c(-10,10))
+bins_out <- tibble(o1=20, o2=20, o3=20)
+h_out <- tibble(o1=0.01, o2=0.01, o3=0.01)
+fhat_pred <- kde_bounded_2(predOut, 1, bounds=bounds_out, bins = bins_out,h = h_out)
+
+fhat_pred$result %>% summarize(sum(density * vcell))
+```
+
+```{r}
+observed <- bind_rows(tibble(o1 = 0, o2 = 0, o3 = 0))
+
+ggplot(fhat_marginal(predOut,1,bounds_out,bins_out,h_out)) +
+  geom_line(aes(x=v1, y=density)) +
+  facet_wrap("v1_name") + 
+  geom_vline(aes(xintercept=v1), gather(observed, "v1_name", "v1"), colour="red") +
+  ylim(0,NA)
+```
+
+```{r}
+ggplot(fhat_marginal_2(predOut, 1, bounds_out, bins_out, h_out)) + 
+  geom_raster(aes(x=v1, y=v2, fill=density)) +
+  # geom_contour(aes(x=v1, y=v2, z=density), colour="white") +
+  facet_grid(rows=vars(v1_name), cols=vars(v2_name)) +
+  geom_point(aes(x=v1, y=v2), 
+    as_tibble(t(combn(names(predOut), m=2))) %>% rename(v1_name=1,v2_name=2) %>% mutate(v1=as_vector(observed[v1_name]), v2=as_vector(observed[v1_name])), colour="red", size=3)
+```
+
+
+### Credible set.
+
+Probability of the subspace GTau where the local probability is > tau, as a function of tau.
+
+```{r}
+pgtau <- function(fhat, tau) {
+  fhat$result %>% filter(density > tau) %>% summarize(sum(density * vcell)) %>% deframe()
+}
+
+pgtaus <- function(fhat, taus) {
+  sapply(taus, function(x) { pgtau(fhat,x) })
+}
+
+```
+
+Value of tau such that the set PGtau has probability 0.95.
+
+```{r}
+max_den_pred <- max(fhat_pred$result$density)
+taus_pred <- seq(0, max_den_pred, length.out=50)
+pgtaus_pred <- tibble(tau=taus_pred, posterior=pgtaus(fhat_pred, taus_pred)) %>% 
+  bind_rows(tibble(tau=Inf, posterior=0))
+
+tau_pg95 <- pgtaus_pred %>% arrange(posterior) %>%
+  slice(c(last(which(posterior <= 0.95)), first(which(posterior > 0.95))))
+tau_pg95 <- approx(tau_pg95$posterior, tau_pg95$tau, 0.95)$y
+ 
+tau_pg95
+```
+
+Estimated density at the observed point.
+
+```{r}
+fhat_observed <- kde_bounded_2(predOut, 1, bounds=bounds_out, h = h_out, evalp=observed)$result$density
+fhat_observed
+```
+
+```{r}
+pg_fhat_observed <- pgtaus_pred %>% arrange(tau) %>%
+  slice(last(which(tau <= fhat_observed))) %>% 
+  select(posterior) %>% deframe()
+
+ggplot(pgtaus_pred) +
+  geom_line(aes(x=tau, y=posterior)) +
+  scale_x_reverse() +
+  annotate("segment", x = Inf, y = pg_fhat_observed, xend = fhat_observed, yend=pg_fhat_observed, colour = "red") +
+  annotate("rect", xmin = tau_pg95, xmax = Inf, ymin = -Inf, ymax = 0.95, alpha = .2) + 
+  annotate("segment", x = fhat_observed, y = pg_fhat_observed, xend = fhat_observed, yend=-Inf, colour = "red") +
+  ylab("Probability")
+```
 
 
 
-
-## 2. Equifinality

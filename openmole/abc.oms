@@ -1,0 +1,98 @@
+/** This script illustrates how to use approximate bayesian computation (ABC) 
+  * in OpenMOLE. */
+
+// The purpose of ABC is to sample the model parameter values according
+// to how likely they are to yield an output value equal to some given
+// value. The latter value is refered to as the "observed" value.
+
+// ABC samples the random variable `Theta` following the density
+// distribution conditional on the output value `f(Theta | Output =
+// observed)`. It is an approximate solution to computing the posterior
+// distribution of `Theta` given `Output = observed` with Bayes formula:
+// `f(Theta | Output = observed) = f(Output = observed | Theta) *
+// f(Theta) / f(Output = observed)`. The prior `f(Theta)` must be given
+// by the user, and the likelihood `f(Output | Theta)` is determined by
+// the model.
+
+// In this example, the model takes a 3-dimensional input `theta` and
+// outputs a random value also 3-dimensional. The output value is drawn
+// randomly from a 3D gaussian mixture whose mean is set to `theta`. (The
+// covariance is fixed to make the density bimodal.)
+
+val theta1 = Val[Double]
+val theta2 = Val[Double]
+val theta3 = Val[Double]
+val o1 = Val[Double]
+val o2 = Val[Double]
+val o3 = Val[Double]
+
+val model = ScalaTask ("""
+    import org.apache.commons.math3.distribution.MixtureMultivariateNormalDistribution
+    val theta = Vector(theta1, theta2, theta3)
+    
+    val cov1: Array[Array[Double]] = Array(
+      Array(1.0 / 2.0, -0.4, 0),
+      Array(-0.4, 1.0 / 2.0, 0),
+      Array(0, 0, 1.0/2.0))
+
+    val cov2: Array[Array[Double]] = Array(
+      Array(1 / 100.0, 0.0, 0.0),
+      Array(0.0, 1 / 100.0, 0.0),
+      Array(0.0, 0.0, 1/100.0))
+
+    val mixtureWeights = Array(0.5, 0.5)
+    val mean1 = Array(theta1 - 1, theta2 - 1, theta3)
+    val mean2 = Array(theta1 + 1, theta2 + 1, theta3).toArray
+    val dist = new MixtureMultivariateNormalDistribution(
+      mixtureWeights, Array(mean1, mean2), Array(cov1, cov2))
+    
+    val Array(o1, o2, o3) = dist.sample
+""") set(
+  inputs += (theta1, theta2, theta3),
+  outputs += (o1, o2, o3),
+  outputs += (theta1, theta2, theta3)
+)
+
+//The parameters prior distribution is uniform between -10 and 10 for
+//both dimensions.
+
+val priors = Seq(
+  ABC.Prior(theta1, -10.0, 10.0),
+  ABC.Prior(theta2, -10.0, 10.0),
+  ABC.Prior(theta3, -10.0, 10.0),
+)
+
+//The observed value is `(0, 0)`.
+
+val observed = Seq(
+  ABC.Observed(o1, 0.0),
+  ABC.Observed(o2, 0.0),
+  ABC.Observed(o3, 0.0)
+)
+
+val step = Val[Int]
+
+val abc =
+  IslandABC(
+    evaluation = model,
+    prior = priors,
+    observed =  observed,
+    sample = 1000,
+    generated = 5000,
+    minAcceptedRatio = 0.01,
+    stopSampleSizeFactor = 5,
+    parallelism=4
+  )
+  
+// The script writes results in csv files in the directory
+// `posteriorSample`. Each file contains a weighted sample. The
+// column `weight` gives the weights, and the columns `theta0` and
+// `theta1` give the parameter values for each dimension. (For more
+// information about the other columns, see M. Lenormand, F. Jabot,
+// G. Deffuant; Adaptive approximate Bayesian computation for complex
+// models. 2012. Computational Statistics 28)
+
+val h = ABCHook(abc, workDirectory / "posteriorSample")  
+  
+abc hook h
+
